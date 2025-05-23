@@ -1,4 +1,4 @@
-# train_local_gatedgcn.py (Simplified)
+# train_local_gatedgcn.py (Further Simplified Defaults for Speed)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,39 +11,42 @@ import numpy as np
 import argparse
 import os
 
-from load_my_data import get_data_splits, RWSE_MAX_K # Assuming load_my_data.py is in same dir
+from load_my_data import get_data_splits, RWSE_MAX_K
 
-# --- FIXED "SMALLER" Hyperparameters for FASTER TESTING ---
+# --- VERY SMALL Hyperparameters for VERY FAST CPU TESTING ---
 NUM_CLASSES = 6
 GNN_LAYERS = 2
-GNN_HIDDEN_DIM = 128
-GNN_DROPOUT = 0.1
-NODE_EMBEDDING_DIM = 64
-EDGE_EMBEDDING_DIM = 64
-USE_RWSE_PE = True # Toggle this to True/False to enable/disable RWSE in the model
+GNN_HIDDEN_DIM = 16       # Further Reduced
+GNN_DROPOUT = 0.2
+NODE_EMBEDDING_DIM = 16    # Further Reduced
+EDGE_EMBEDDING_DIM = 16    # Further Reduced
+USE_RWSE_PE = True         # Default to True, can be toggled via CLI
 PE_DIM = RWSE_MAX_K if USE_RWSE_PE else 0
 
-# GNN "Plus" Features (kept enabled)
+# GNN "Plus" Features
 USE_RESIDUAL = True
 USE_FFN = True
 USE_BATCHNORM = True
 
 # Training
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.001     # Reduced LR
 WEIGHT_DECAY = 1.0e-5
-EPOCHS = 20 # Default epochs for a quick run
-BATCH_SIZE = 64
+EPOCHS = 20                # Default epochs for a quick run
+BATCH_SIZE = 32
+NUM_WARMUP_EPOCHS = 3      # Adjusted for fewer epochs
 
-# --- StandaloneGatedGCNLayer (Same as previous corrected version) ---
+# --- StandaloneGatedGCNLayer (Same as previous) ---
 class StandaloneGatedGCNLayer(torch.nn.Module):
     def __init__(self, in_dim_node, in_dim_edge, out_dim, dropout, residual, ffn_enabled,
                  batchnorm_enabled, act_fn_constructor, aggr='add', **kwargs):
         super().__init__(**kwargs)
         self.in_dim_node, self.in_dim_edge, self.out_dim = in_dim_node, in_dim_edge, out_dim
         self.activation = act_fn_constructor()
-        self.A, self.B, self.C, self.D, self.E = [Linear(in_dim_node, out_dim, bias=True) for _ in range(2)] + \
-                                                 [Linear(in_dim_edge, out_dim, bias=True)] + \
-                                                 [Linear(in_dim_node, out_dim, bias=True) for _ in range(2)]
+        # Using list comprehension for brevity
+        self.A, self.B = Linear(in_dim_node, out_dim, bias=True), Linear(in_dim_node, out_dim, bias=True)
+        self.C = Linear(in_dim_edge, out_dim, bias=True)
+        self.D, self.E = Linear(in_dim_node, out_dim, bias=True), Linear(in_dim_node, out_dim, bias=True)
+
         self.act_fn_x, self.act_fn_e = self.activation, self.activation
         self.dropout_rate, self.residual_enabled, self.e_prop = dropout, residual, None
         self.batchnorm_enabled, self.ffn_enabled, self.aggr = batchnorm_enabled, ffn_enabled, aggr
@@ -93,20 +96,27 @@ class StandaloneGatedGCNLayer(torch.nn.Module):
         
         if self.ffn_enabled:
             x_ffn_ident = x_final
-            x_ffn_proc = self.norm1_ffn(x_ffn_ident) if self.batchnorm_enabled else x_ffn_ident
-            x_ffn_proc = x_ffn_ident + self._ff_block(x_ffn_proc) # Corrected residual for FFN
-            x_final = self.norm2_ffn(x_ffn_proc) if self.batchnorm_enabled else x_ffn_proc
+            x_ffn_proc = self.norm1_ffn(x_ffn_ident) if self.batchnorm_enabled and x_ffn_ident.numel() > 0 else x_ffn_ident
+            # FFN block only if input is not empty
+            if x_ffn_proc.numel() > 0:
+                 x_ffn_proc = x_ffn_ident + self._ff_block(x_ffn_proc) 
+                 x_final = self.norm2_ffn(x_ffn_proc) if self.batchnorm_enabled else x_ffn_proc
+            else: # If x_ffn_proc is empty, x_final remains empty or as is
+                 x_final = x_ffn_proc 
         return x_final, e_final
 
 # --- Model Definition ---
 class MyLocalGatedGCN(torch.nn.Module):
-    def __init__(self): # Hyperparameters are now global
+    def __init__(self, current_use_rwse_pe, current_pe_dim): # Pass PE config
         super().__init__()
-        self.use_rwse_pe = USE_RWSE_PE
-        self.node_encoder = nn.Embedding(2, NODE_EMBEDDING_DIM) # Vocab: 0 and 1 for placeholder x
+        self.use_rwse_pe = current_use_rwse_pe # Use passed value
+        self.node_encoder = nn.Embedding(2, NODE_EMBEDDING_DIM)
         self.edge_encoder = Linear(7, EDGE_EMBEDDING_DIM) # ppa edge_attr is 7-dim
 
-        current_node_dim = NODE_EMBEDDING_DIM + PE_DIM if self.use_rwse_pe else NODE_EMBEDDING_DIM
+        current_node_dim = NODE_EMBEDDING_DIM
+        if self.use_rwse_pe: # Use passed value
+            current_node_dim += current_pe_dim 
+        
         current_edge_dim = EDGE_EMBEDDING_DIM
 
         self.gnn_layers = nn.ModuleList()
@@ -124,12 +134,18 @@ class MyLocalGatedGCN(torch.nn.Module):
         x, edge_idx, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
         x_base = self.node_encoder(x.squeeze(-1))
         
-        e_attr_enc = torch.empty((0,EDGE_EMBEDDING_DIM), device=x.device, dtype=x_base.dtype) # Init empty
-        if edge_attr.numel() > 0: # Only encode if edges exist
-             e_attr_enc = self.edge_encoder(edge_attr)
+        e_attr_enc = torch.empty((0,EDGE_EMBEDDING_DIM), device=x.device, dtype=x_base.dtype)
+        if hasattr(edge_attr, 'numel') and edge_attr.numel() > 0 : # Check if edge_attr is not None and not empty
+             if edge_attr.size(0) > 0 : # Ensure there are edges to encode
+                e_attr_enc = self.edge_encoder(edge_attr)
 
-
-        current_x = torch.cat([x_base, data.rwse_pe.float().to(x_base.device)], dim=-1) if self.use_rwse_pe and hasattr(data, 'rwse_pe') and data.rwse_pe is not None and data.rwse_pe.size(0) == x_base.size(0) else x_base
+        current_x = x_base
+        if self.use_rwse_pe and hasattr(data, 'rwse_pe') and data.rwse_pe is not None and data.rwse_pe.numel() > 0:
+            pe = data.rwse_pe.float().to(x_base.device)
+            if x_base.size(0) == pe.size(0):
+                current_x = torch.cat([x_base, pe], dim=-1)
+            # else: print(f"Warning: RWSE PE dim mismatch. x_base: {x_base.shape}, pe: {pe.shape}")
+        
         current_e = e_attr_enc
 
         for layer in self.gnn_layers:
@@ -138,7 +154,8 @@ class MyLocalGatedGCN(torch.nn.Module):
         graph_x = self.pool(current_x, batch)
         return self.head(graph_x)
 
-# --- Training and Evaluation Functions (largely same) ---
+# --- Training and Evaluation Functions (same as previous) ---
+# ... (train_epoch, eval_epoch from previous response) ...
 def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss, processed_graphs = 0, 0
@@ -150,6 +167,8 @@ def train_epoch(model, loader, optimizer, criterion, device):
         if target_y.ndim == 0: target_y = target_y.unsqueeze(0)
         loss = criterion(out, target_y)
         loss.backward()
+        # Optional: Gradient Clipping
+        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item() * data.num_graphs
         processed_graphs += data.num_graphs
@@ -167,21 +186,20 @@ def eval_epoch(model, loader, criterion, device, is_test_set_preds_only=False):
         preds = out.argmax(dim=1)
         all_preds_list.append(preds.cpu())
 
-        if not is_test_set_preds_only: # Calculate loss and gather labels only if not just predicting
+        if not is_test_set_preds_only:
             target_y = data.y.squeeze()
             if target_y.ndim == 0: target_y = target_y.unsqueeze(0)
-            # Only calculate loss if labels are valid (not -1)
             valid_targets = target_y != -1
             if valid_targets.any():
                 loss = criterion(out[valid_targets], target_y[valid_targets])
-                total_loss += loss.item() * torch.sum(valid_targets).item() # loss per valid sample
+                total_loss += loss.item() * torch.sum(valid_targets).item()
             all_labels_list.append(target_y.cpu())
         processed_graphs += data.num_graphs
     
     if is_test_set_preds_only:
         return torch.cat(all_preds_list).numpy() if all_preds_list else np.array([])
 
-    if not all_labels_list: return 0, 0 # No data or no valid labels
+    if not all_labels_list and not is_test_set_preds_only : return 0, 0
     
     all_preds_np = torch.cat(all_preds_list).numpy()
     all_labels_np = torch.cat(all_labels_list).numpy()
@@ -191,44 +209,67 @@ def eval_epoch(model, loader, criterion, device, is_test_set_preds_only=False):
     if np.sum(valid_indices) > 0:
         accuracy = accuracy_score(all_labels_np[valid_indices], all_preds_np[valid_indices])
         
-    # Normalize total_loss by number of graphs that had at least one valid label
-    # This is a bit tricky, simpler to just use processed_graphs if criterion handles ignore_index
-    effective_loss = total_loss / processed_graphs if processed_graphs else 0
-    return effective_loss, accuracy
+    effective_loss = total_loss / np.sum(valid_indices) if np.sum(valid_indices) > 0 else 0
+    # Or, if criterion handles ignore_index, then total_loss / processed_graphs is fine
+    # effective_loss = total_loss / processed_graphs if processed_graphs > 0 else 0
 
+    return effective_loss, accuracy
 
 # --- Main Execution ---
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Simplified GatedGCN Training')
     parser.add_argument('--force_reprocess_data', action='store_true', help="Force re-processing of data")
     parser.add_argument('--epochs', type=int, default=EPOCHS, help="Number of training epochs.")
+    parser.add_argument('--no_rwse', action='store_true', help="Disable RWSE Positional Encoding.")
+    parser.add_argument('--lr', type=float, default=LEARNING_RATE, help="Learning rate.")
+
     cli_args = parser.parse_args()
 
-    EPOCHS = cli_args.epochs # Update epochs from CLI
+    # Update globals from CLI args
+    EPOCHS = cli_args.epochs
+    LEARNING_RATE = cli_args.lr
+    USE_RWSE_PE = not cli_args.no_rwse # If flag is present, no_rwse is True, so USE_RWSE_PE becomes False
+    PE_DIM = RWSE_MAX_K if USE_RWSE_PE else 0
 
-    print(f"Config: Epochs={EPOCHS}, LR={LEARNING_RATE}, Batch={BATCH_SIZE}, HiddenDim={GNN_HIDDEN_DIM}")
-    print(f"Model: Layers={GNN_LAYERS}, NodeEmb={NODE_EMBEDDING_DIM}, EdgeEmb={EDGE_EMBEDDING_DIM}")
-    print(f"RWSE Used: {USE_RWSE_PE}, PE Dim (if used): {PE_DIM if USE_RWSE_PE else 'N/A'}")
+
+    print(f"--- Configuration ---")
+    print(f"Epochs: {EPOCHS}, LR: {LEARNING_RATE}, Batch Size: {BATCH_SIZE}")
+    print(f"Model: Layers={GNN_LAYERS}, HiddenDim={GNN_HIDDEN_DIM}, NodeEmb={NODE_EMBEDDING_DIM}, EdgeEmb={EDGE_EMBEDDING_DIM}")
+    print(f"Dropout: {GNN_DROPOUT}, Residual: {USE_RESIDUAL}, FFN: {USE_FFN}, BatchNorm: {USE_BATCHNORM}")
+    print(f"RWSE Used: {USE_RWSE_PE}, PE Dim (if used): {PE_DIM}")
+    print(f"--------------------")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    loaded_splits_dict = get_data_splits(force_reprocess=cli_args.force_reprocess_data) # Renamed for clarity
-    train_graphs = loaded_splits_dict.get('train', []) # Use .get() for safety
-    val_graphs = loaded_splits_dict.get('val', [])
-    test_graphs = loaded_splits_dict.get('test', [])
+
+    print("Loading data...")
+    loaded_splits = get_data_splits(force_reprocess=cli_args.force_reprocess_data)
+    train_graphs, val_graphs, test_graphs = loaded_splits.get('train',[]), loaded_splits.get('val',[]), loaded_splits.get('test',[])
 
     if not train_graphs: print("No training data. Exiting."); exit()
 
-    train_loader = DataLoader(train_graphs, batch_size=BATCH_SIZE, shuffle=True, num_workers=0) # num_workers=0 for simplicity/debug
+    train_loader = DataLoader(train_graphs, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_graphs, batch_size=BATCH_SIZE, shuffle=False, num_workers=0) if val_graphs else None
     test_loader = DataLoader(test_graphs, batch_size=BATCH_SIZE, shuffle=False, num_workers=0) if test_graphs else None
 
-    model = MyLocalGatedGCN().to(device)
+    # Pass the current PE config to the model
+    model = MyLocalGatedGCN(current_use_rwse_pe=USE_RWSE_PE, current_pe_dim=PE_DIM).to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of trainable parameters: {num_params:,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=-1) # Ignores y=-1 during loss calculation
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
+    
+    scheduler = None
+    if EPOCHS > NUM_WARMUP_EPOCHS :
+        def lr_lambda_fn(current_epoch_internal): # Use a different name
+            if current_epoch_internal < NUM_WARMUP_EPOCHS:
+                return float(current_epoch_internal + 1) / float(NUM_WARMUP_EPOCHS + 1)
+            else:
+                progress = float(current_epoch_internal - NUM_WARMUP_EPOCHS) / float(max(1, EPOCHS - NUM_WARMUP_EPOCHS))
+                return max(0.0, 0.5 * (1.0 + np.cos(np.pi * progress)))
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda_fn)
+
 
     print("\nStarting training...")
     best_val_acc = 0.0
@@ -247,7 +288,9 @@ if __name__ == '__main__':
             torch.save(model.state_dict(), model_save_path)
             print(f"*** Best val_acc: {best_val_acc:.4f} (Epoch {epoch_iter}). Model saved. ***")
 
-        print(f"Epoch {epoch_iter:02d}/{EPOCHS:02d} | TrainLoss: {train_loss:.4f} | ValLoss: {val_loss:.4f} | ValAcc: {val_acc:.4f} | Time: {(time.time()-start_time):.2f}s")
+        current_lr_val = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch_iter:02d}/{EPOCHS:02d} | TrainLoss: {train_loss:.4f} | ValLoss: {val_loss:.4f} | ValAcc: {val_acc:.4f} | LR: {current_lr_val:.1e} | Time: {(time.time()-start_time):.2f}s")
+        if scheduler: scheduler.step()
     
     print("\nTraining finished.")
     if os.path.exists(model_save_path):
