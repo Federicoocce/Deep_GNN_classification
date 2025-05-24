@@ -104,7 +104,7 @@ def get_data_splits(force_reprocess=False):
 
     if not force_reprocess and all(os.path.exists(p) for p in paths.values()):
         print("Loading pre-processed data...")
-        return {s: torch.load(paths[s]) for s in ['train', 'val', 'test']}
+        return {s: torch.load(paths[s], weights_only=False) for s in ['train', 'val', 'test']}
     
     print("Processing data from JSONs...")
     data_splits = {'train': [], 'val': [], 'test': []}
