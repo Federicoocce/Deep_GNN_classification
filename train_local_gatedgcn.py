@@ -16,22 +16,22 @@ from load_my_data import get_data_splits, RWSE_MAX_K
 # --- VERY SMALL Hyperparameters for VERY FAST CPU TESTING ---
 NUM_CLASSES = 6
 GNN_LAYERS = 2
-GNN_HIDDEN_DIM = 16       # Further Reduced
-GNN_DROPOUT = 0.2
-NODE_EMBEDDING_DIM = 16    # Further Reduced
-EDGE_EMBEDDING_DIM = 16    # Further Reduced
-USE_RWSE_PE = True         # Default to True, can be toggled via CLI
+GNN_HIDDEN_DIM = 64      # Further Reduced
+GNN_DROPOUT = 0.3
+NODE_EMBEDDING_DIM = 32    # Further Reduced
+EDGE_EMBEDDING_DIM = 32   # Further Reduced
+USE_RWSE_PE = False         # Default to True, can be toggled via CLI
 PE_DIM = RWSE_MAX_K if USE_RWSE_PE else 0
 
 # GNN "Plus" Features
 USE_RESIDUAL = True
-USE_FFN = True
+USE_FFN = False
 USE_BATCHNORM = True
 
 # Training
-LEARNING_RATE = 0.001     # Reduced LR
+LEARNING_RATE = 0.0003     # Reduced LR
 WEIGHT_DECAY = 1.0e-5
-EPOCHS = 20                # Default epochs for a quick run
+EPOCHS = 200                # Default epochs for a quick run
 BATCH_SIZE = 32
 NUM_WARMUP_EPOCHS = 3      # Adjusted for fewer epochs
 
