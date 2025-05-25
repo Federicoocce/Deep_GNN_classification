@@ -1,4 +1,4 @@
-# train_local_gatedgcn.py (Modified for full_data_loader)
+# train_local_gatedgcn.py (Simplified for full_data_loader)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,21 +8,26 @@ from torch_geometric.loader import DataLoader
 from sklearn.metrics import accuracy_score
 import time
 import numpy as np
-import pandas as pd # For CSV output
+import pandas as pd
 import argparse
 import os
 
-# Import from the new data loader file
-from full_data_loader import get_data_splits, RWSE_MAX_K # MODIFIED IMPORT
+# Import from your new data loader file
+from full_data_loader import get_data_splits, RWSE_MAX_K 
 
-# --- VERY SMALL Hyperparameters for VERY FAST CPU TESTING ---
-NUM_CLASSES = 6 # Adjust if your datasets A,B,C,D have different num_classes for training
+# --- Hyperparameters (reflecting your last run's output where possible) ---
+NUM_CLASSES = 6 # Adjust if your combined training data has a different number of classes
 GNN_LAYERS = 2
-GNN_HIDDEN_DIM = 512     
+GNN_HIDDEN_DIM = 256     # From your traceback
 GNN_DROPOUT = 0.3
-NODE_EMBEDDING_DIM = 256  
-EDGE_EMBEDDING_DIM = 256  
-USE_RWSE_PE = False         
+NODE_EMBEDDING_DIM = 128  # From your traceback
+EDGE_EMBEDDING_DIM = 128  # From your traceback
+
+# These dimensions are now fixed based on expected output from full_data_loader.py
+NODE_CATEGORY_COUNT = 1  # data.x is [N,1] with all 0s -> 1 category
+EDGE_FEATURE_DIM = 7     # From your traceback for auto-detected edge_feat_dim
+
+USE_RWSE_PE = False       
 PE_DIM = RWSE_MAX_K if USE_RWSE_PE else 0
 
 # GNN "Plus" Features
@@ -37,7 +42,7 @@ EPOCHS = 300
 BATCH_SIZE = 32
 NUM_WARMUP_EPOCHS = 10     
 
-# --- StandaloneGatedGCNLayer (Same as previous) ---
+# --- StandaloneGatedGCNLayer (Same as your provided version) ---
 class StandaloneGatedGCNLayer(torch.nn.Module):
     def __init__(self, in_dim_node, in_dim_edge, out_dim, dropout, residual, ffn_enabled,
                  batchnorm_enabled, act_fn_constructor, aggr='add', **kwargs):
@@ -105,14 +110,18 @@ class StandaloneGatedGCNLayer(torch.nn.Module):
                  x_final = x_ffn_proc 
         return x_final, e_final
 
-# --- Model Definition ---
+# --- Model Definition (Simplified __init__) ---
 class MyLocalGatedGCN(torch.nn.Module):
-    def __init__(self, current_use_rwse_pe, current_pe_dim, node_feat_dim=1, edge_feat_dim=7): # Allow dynamic dims
+    def __init__(self, current_use_rwse_pe, current_pe_dim): 
         super().__init__()
-        self.use_rwse_pe = current_use_rwse_pe 
-        self.node_encoder = nn.Embedding(node_feat_dim + 1, NODE_EMBEDDING_DIM) # +1 if node features are 0-indexed categories
-                                                                            # If node features are already dense, use Linear
-        self.edge_encoder = Linear(edge_feat_dim, EDGE_EMBEDDING_DIM) 
+        self.use_rwse_pe = current_use_rwse_pe
+        
+        # Node encoder assumes data.x is [N,1] torch.long with value 0.
+        # So, num_embeddings = 1 (for category '0').
+        self.node_encoder = nn.Embedding(num_embeddings=NODE_CATEGORY_COUNT, embedding_dim=NODE_EMBEDDING_DIM)
+        
+        # Edge encoder assumes fixed edge feature dimension from full_data_loader.py
+        self.edge_encoder = Linear(EDGE_FEATURE_DIM, EDGE_EMBEDDING_DIM) 
 
         current_node_dim = NODE_EMBEDDING_DIM
         if self.use_rwse_pe: 
@@ -129,30 +138,30 @@ class MyLocalGatedGCN(torch.nn.Module):
                                         USE_RESIDUAL, USE_FFN, USE_BATCHNORM, lambda: nn.ReLU())
             )
         self.pool = global_mean_pool
-        self.head = Linear(GNN_HIDDEN_DIM, NUM_CLASSES) # NUM_CLASSES should be consistent with training labels
+        self.head = Linear(GNN_HIDDEN_DIM, NUM_CLASSES)
 
     def forward(self, data):
         x, edge_idx, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
         
-        # Node encoding
-        if x.dtype == torch.long: # Categorical features (like node type)
+        if x.dtype == torch.long: 
             x_base = self.node_encoder(x.squeeze(-1))
-        else: # Dense features (already floats)
-            # If your node features are already NxD floats, you might want a Linear layer instead of Embedding
-            # For this example, assuming they are categorical and need embedding
-            # If x is already [num_nodes, NODE_EMBEDDING_DIM], then x_base = x, or pass through a Linear
-            print(f"Warning: Unexpected node feature type {x.dtype}. Assuming categorical for nn.Embedding.")
-            x_base = self.node_encoder(x.long().squeeze(-1)) # Attempt to cast, might fail or be wrong
+        else: 
+            # This case should ideally not be hit if full_data_loader ensures .long() type
+            print(f"Warning: Unexpected node feature type {x.dtype} in model. Attempting to cast to long for nn.Embedding.")
+            x_base = self.node_encoder(x.long().squeeze(-1)) 
             
-        e_attr_enc = torch.empty((0,EDGE_EMBEDDING_DIM), device=x.device, dtype=x_base.dtype)
+        e_attr_enc = torch.empty((0, EDGE_EMBEDDING_DIM), device=x.device, dtype=x_base.dtype)
         if hasattr(edge_attr, 'numel') and edge_attr.numel() > 0 : 
              if edge_attr.size(0) > 0 : 
-                if edge_attr.shape[1] == self.edge_encoder.in_features: # Check consistency
+                # Access input dimension of torch_geometric.nn.Linear (or torch.nn.Linear)
+                expected_edge_dim_from_encoder = self.edge_encoder.weight.shape[1] 
+                
+                if edge_attr.shape[1] == expected_edge_dim_from_encoder:
                     e_attr_enc = self.edge_encoder(edge_attr)
                 else:
-                    print(f"Warning: Edge feature dim mismatch. Expected {self.edge_encoder.in_features}, got {edge_attr.shape[1]}. Skipping edge encoding for this batch.")
-                    # Fallback: create zero edge features of correct dimension if edges exist
-                    if edge_idx.numel() > 0:
+                    # This case should ideally not be hit if full_data_loader ensures consistent edge_attr dim
+                    print(f"Warning: Edge feature dim mismatch in model. Expected {expected_edge_dim_from_encoder}, got {edge_attr.shape[1]}. Creating zero edge features.")
+                    if edge_idx.numel() > 0: # Only create if edges exist
                         num_edges = edge_idx.shape[1]
                         e_attr_enc = torch.zeros((num_edges, EDGE_EMBEDDING_DIM), device=x.device, dtype=x_base.dtype)
 
@@ -170,7 +179,7 @@ class MyLocalGatedGCN(torch.nn.Module):
         graph_x = self.pool(current_x, batch)
         return self.head(graph_x)
 
-# --- Training and Evaluation Functions (Mostly same) ---
+# --- Training and Evaluation Functions (same as your provided version) ---
 def train_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss, processed_graphs = 0, 0
@@ -179,7 +188,7 @@ def train_epoch(model, loader, optimizer, criterion, device):
         optimizer.zero_grad()
         out = model(data)
         target_y = data.y.squeeze()
-        if target_y.ndim == 0: target_y = target_y.unsqueeze(0) # Ensure 1D
+        if target_y.ndim == 0: target_y = target_y.unsqueeze(0)
         loss = criterion(out, target_y)
         loss.backward()
         optimizer.step()
@@ -201,7 +210,7 @@ def eval_epoch(model, loader, criterion, device, is_test_set_preds_only=False):
 
         if not is_test_set_preds_only:
             target_y = data.y.squeeze()
-            if target_y.ndim == 0: target_y = target_y.unsqueeze(0) # Ensure 1D
+            if target_y.ndim == 0: target_y = target_y.unsqueeze(0)
             valid_targets = target_y != -1
             if valid_targets.any():
                 loss = criterion(out[valid_targets], target_y[valid_targets])
@@ -230,29 +239,22 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='GatedGCN Training with A,B,C,D datasets')
     parser.add_argument('--force_reprocess_data', action='store_true', help="Force re-processing of data")
     parser.add_argument('--epochs', type=int, default=EPOCHS, help="Number of training epochs.")
-    parser.add_argument('--no_rwse', action='store_true', help="Disable RWSE Positional Encoding.")
+    parser.add_argument('--no_rwse', action='store_false', dest='use_rwse_pe_cli', help="Disable RWSE Positional Encoding.") # Default is True if not specified
     parser.add_argument('--lr', type=float, default=LEARNING_RATE, help="Learning rate.")
-    # Potentially add args for node/edge feature dims if they vary and aren't auto-detected well
-    # parser.add_argument('--node_feat_dim', type=int, default=1, help="Max value for node features if categorical, or dim if dense.")
-    # parser.add_argument('--edge_feat_dim', type=int, default=7, help="Dimension of edge features.")
-
+    parser.set_defaults(use_rwse_pe_cli=USE_RWSE_PE) # Set default based on global USE_RWSE_PE
 
     cli_args = parser.parse_args()
 
     EPOCHS = cli_args.epochs
     LEARNING_RATE = cli_args.lr
-    USE_RWSE_PE = not cli_args.no_rwse 
+    USE_RWSE_PE = cli_args.use_rwse_pe_cli # Use value from CLI or default
     PE_DIM = RWSE_MAX_K if USE_RWSE_PE else 0
-    # NODE_FEAT_INPUT_DIM = cli_args.node_feat_dim # If using args
-    # EDGE_FEAT_INPUT_DIM = cli_args.edge_feat_dim # If using args
-    NODE_FEAT_INPUT_DIM = 1 # Assuming node features are single integer type (0 for all nodes in example)
-    EDGE_FEAT_INPUT_DIM = 7 # Default for ppa, might need to be dynamic if datasets vary
 
 
     print(f"--- Configuration ---")
     print(f"Epochs: {EPOCHS}, LR: {LEARNING_RATE}, Batch Size: {BATCH_SIZE}")
     print(f"Model: Layers={GNN_LAYERS}, HiddenDim={GNN_HIDDEN_DIM}, NodeEmb={NODE_EMBEDDING_DIM}, EdgeEmb={EDGE_EMBEDDING_DIM}")
-    print(f"Node Input Dim (for Embedding): {NODE_FEAT_INPUT_DIM}, Edge Input Dim: {EDGE_FEAT_INPUT_DIM}")
+    print(f"Node Category Count (for Embedding): {NODE_CATEGORY_COUNT}, Edge Feature Dim: {EDGE_FEATURE_DIM}")
     print(f"Dropout: {GNN_DROPOUT}, Residual: {USE_RESIDUAL}, FFN: {USE_FFN}, BatchNorm: {USE_BATCHNORM}")
     print(f"RWSE Used: {USE_RWSE_PE}, PE Dim (if used): {PE_DIM}")
     print(f"--------------------")
@@ -266,56 +268,35 @@ if __name__ == '__main__':
     train_graphs = all_loaded_splits.get('train', [])
     val_graphs = all_loaded_splits.get('val', [])
     
-    # Store test graphs in a dictionary for easier iteration
     test_datasets = {}
-    for ds_name in ['A', 'B', 'C', 'D']:
-        test_datasets[ds_name] = all_loaded_splits.get(f'test_{ds_name}', [])
+    for ds_name_iter in ['A', 'B', 'C', 'D']: # Corrected iteration variable name
+        test_datasets[ds_name_iter] = all_loaded_splits.get(f'test_{ds_name_iter}', [])
 
     if not train_graphs: 
         print("No training data loaded. Exiting.")
         exit()
-
-    # Dynamically determine edge feature dimension from the first training graph if possible
+    
+    # Verify edge feature dimension from loaded data (optional sanity check)
     if train_graphs and hasattr(train_graphs[0], 'edge_attr') and train_graphs[0].edge_attr is not None and train_graphs[0].edge_attr.numel() > 0:
-        EDGE_FEAT_INPUT_DIM = train_graphs[0].edge_attr.shape[1]
-        print(f"Auto-detected edge_feat_dim from data: {EDGE_FEAT_INPUT_DIM}")
-    else: # Fallback if no edge_attr in first graph or no train_graphs
-        print(f"Warning: Could not auto-detect edge_feat_dim. Using default: {EDGE_FEAT_INPUT_DIM}. Ensure this is correct.")
+        actual_edge_dim = train_graphs[0].edge_attr.shape[1]
+        if actual_edge_dim != EDGE_FEATURE_DIM:
+            print(f"WARNING: Loaded training data has edge_attr dim {actual_edge_dim}, but model expects {EDGE_FEATURE_DIM}. Ensure consistency from full_data_loader.py or update EDGE_FEATURE_DIM.")
+    elif EDGE_FEATURE_DIM > 0 : # If we expect edge features but first graph has none/empty
+        print(f"WARNING: Model expects edge_attr dim {EDGE_FEATURE_DIM}, but first training graph has no/empty edge_attr. This might be an issue if other graphs have edge_attr.")
 
-    # Determine max node feature value for nn.Embedding size
-    # Assumes node features are categorical integers starting from 0.
-    # If x is a single integer (e.g., all nodes are type 0), then max_node_val = 0.
-    # nn.Embedding needs num_embeddings = max_node_val + 1.
-    # For the example data where x is torch.zeros(num_nodes, 1), max_node_val is 0. So num_embeddings = 1.
-    # The model's nn.Embedding(NODE_FEAT_INPUT_DIM (+1 if 0-indexed), ...) handles this.
-    # If NODE_FEAT_INPUT_DIM is set to the number of categories (e.g., 1 if only '0' exists)
-    # nn.Embedding(1, DIM) is fine.
-    # If node features can be 0, 1, 2, then NODE_FEAT_INPUT_DIM should be 3.
-    # For simplicity, we'll stick to the hardcoded NODE_FEAT_INPUT_DIM = 1 for the x = torch.zeros case.
-    # If your 'x' values are different, you'll need to adjust NODE_FEAT_INPUT_DIM.
-    # A more robust way:
-    # max_node_val = 0
-    # if train_graphs and train_graphs[0].x.numel() > 0:
-    #     max_node_val = int(train_graphs[0].x.max().item())
-    # NODE_FEAT_INPUT_DIM_FOR_EMBEDDING = max_node_val + 1
-    # print(f"Auto-detected NODE_FEAT_INPUT_DIM_FOR_EMBEDDING: {NODE_FEAT_INPUT_DIM_FOR_EMBEDDING}")
-    # Then pass this to the model. For now, keeping it simpler.
-    NODE_FEAT_INPUT_DIM_FOR_EMBEDDING = NODE_FEAT_INPUT_DIM # Simplification: assuming it's #categories
 
     train_loader = DataLoader(train_graphs, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_graphs, batch_size=BATCH_SIZE, shuffle=False, num_workers=0) if val_graphs else None
 
     model = MyLocalGatedGCN(
         current_use_rwse_pe=USE_RWSE_PE, 
-        current_pe_dim=PE_DIM,
-        node_feat_dim=NODE_FEAT_INPUT_DIM_FOR_EMBEDDING, # Number of node categories
-        edge_feat_dim=EDGE_FEAT_INPUT_DIM
+        current_pe_dim=PE_DIM
     ).to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of trainable parameters: {num_params:,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    criterion = torch.nn.CrossEntropyLoss(ignore_index=-1) # Ignores y = -1 for test set
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=-1)
     
     scheduler = None
     if EPOCHS > NUM_WARMUP_EPOCHS :
@@ -331,14 +312,14 @@ if __name__ == '__main__':
     best_val_acc = 0.0
     
     model_save_dir = 'models'
-    model_save_path = os.path.join(model_save_dir, 'best_gatedgcn_multids.pth') # Unique name
+    model_save_path = os.path.join(model_save_dir, 'best_gatedgcn_multids.pth') 
 
     for epoch_iter in range(1, EPOCHS + 1):
         start_time = time.time()
         train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
         
         val_loss, val_acc = (0,0)
-        if val_loader and val_graphs: # Check if val_graphs is not empty
+        if val_loader and val_graphs: 
             val_loss, val_acc = eval_epoch(model, val_loader, criterion, device)
         
         if val_loader and val_graphs and val_acc > best_val_acc :
@@ -358,9 +339,8 @@ if __name__ == '__main__':
     else:
         print("Warning: No best model saved. Using the model from the last epoch for testing.")
     
-    # --- Generate predictions for each test dataset ---
     print("\n--- Generating Test Predictions ---")
-    for ds_name, current_test_graphs in test_datasets.items():
+    for ds_name, current_test_graphs in test_datasets.items(): # ds_name was ds_name_iter
         if current_test_graphs:
             print(f"Generating predictions for testset_{ds_name}...")
             current_test_loader = DataLoader(current_test_graphs, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
@@ -369,7 +349,7 @@ if __name__ == '__main__':
             
             num_test_samples = len(test_predictions_array)
             if num_test_samples > 0:
-                ids = np.arange(1, num_test_samples + 1) # 1-based IDs
+                ids = np.arange(1, num_test_samples + 1) 
                 predictions_df = pd.DataFrame({'id': ids, 'pred': test_predictions_array})
                 
                 output_predictions_filename = f'testset_{ds_name}.csv'
