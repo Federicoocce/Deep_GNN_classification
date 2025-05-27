@@ -8,6 +8,7 @@ Each loss is implemented as a PyTorch nn.Module with documentation and comments.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import CrossEntropyLoss
 
 
 class GCELoss(nn.Module):
@@ -18,6 +19,7 @@ class GCELoss(nn.Module):
     Args:
         q (float): Robustness parameter (0 < q <= 1). Default is 0.7.
     """
+
     def __init__(self, q=0.7):
         super().__init__()
         self.q = q
@@ -38,6 +40,7 @@ class SCELoss(nn.Module):
         alpha (float): Weight for standard cross-entropy.
         beta (float): Weight for reverse cross-entropy.
     """
+
     def __init__(self, alpha=1.0, beta=1.0):
         super().__init__()
         self.alpha = alpha
@@ -61,6 +64,7 @@ class BootstrappingLoss(nn.Module):
     Args:
         beta (float): Weight for ground truth (0 to 1).
     """
+
     def __init__(self, beta=0.95):
         super().__init__()
         self.beta = beta
@@ -81,6 +85,7 @@ class FocalLoss(nn.Module):
     Args:
         gamma (float): Focusing parameter (commonly 2.0).
     """
+
     def __init__(self, gamma=2.0):
         super().__init__()
         self.gamma = gamma
@@ -99,7 +104,43 @@ class MAELoss(nn.Module):
     Mean Absolute Error Loss
     Very robust to noisy labels but harder to optimize.
     """
+
     def forward(self, logits, targets):
         probs = F.softmax(logits, dim=1)
         one_hot = F.one_hot(targets, num_classes=logits.size(1)).float()
         return torch.abs(probs - one_hot).mean()
+
+
+class ELRLoss(nn.Module):
+    def __init__(self, teacher_model, lambda_elr=3.0, device='cuda', criterion=None):
+        """
+        teacher_model: a frozen copy of the model with EMA weights
+        lambda_elr: strength of the consistency regularization
+        """
+        super().__init__()
+        self.teacher_model = teacher_model
+        self.lambda_elr = lambda_elr
+        self.device = device
+        self.criterion = criterion or nn.CrossEntropyLoss()
+
+    def forward(self, student_logits, targets, inputs):
+        """
+        student_logits: logits output by student model [B, C]
+        targets: ground truth labels [B]
+        inputs: input images (needed to get teacher logits)
+        """
+        # Get teacher predictions (no gradients)
+        with torch.no_grad():
+            teacher_logits = self.teacher_model(inputs)  # [B, C]
+            teacher_probs = F.softmax(teacher_logits, dim=1)
+
+        # Student predictions
+        student_probs = F.softmax(student_logits, dim=1)
+
+        # Standard CE loss
+        ce_loss = self.criterion(student_logits, targets)
+
+        # ELR-style consistency regularization with past model
+        elr_reg = -torch.sum(student_probs * torch.log(teacher_probs + 1e-6), dim=1).mean()
+
+        return ce_loss + self.lambda_elr * elr_reg
