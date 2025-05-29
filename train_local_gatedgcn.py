@@ -21,10 +21,10 @@ from losses import GCELoss, SCELoss, BootstrappingLoss, FocalLoss, MAELoss
 # --- Hyperparameters ---
 NUM_CLASSES = 6
 GNN_LAYERS = 3
-GNN_HIDDEN_DIM = 512
+GNN_HIDDEN_DIM = 128
 GNN_DROPOUT = 0.5
-NODE_EMBEDDING_DIM = 256
-EDGE_EMBEDDING_DIM = 256
+NODE_EMBEDDING_DIM = 128
+EDGE_EMBEDDING_DIM = 128
 NODE_CATEGORY_COUNT = 1
 EDGE_FEATURE_DIM = 7
 USE_RWSE_PE = False
@@ -38,8 +38,8 @@ EPOCHS = 300
 BATCH_SIZE = 32
 NUM_WARMUP_EPOCHS = 10
 
-DEFAULT_LABEL_SMOOTHING_FACTOR = 0.1
-DEFAULT_EDGE_DROP_PROBABILITY = 0.2
+DEFAULT_LABEL_SMOOTHING_FACTOR = 0.20
+DEFAULT_EDGE_DROP_PROBABILITY = 0.20
 
 
 # --- Edge Dropping Transform ---
@@ -238,11 +238,11 @@ def _get_loss(loss_name: str, label_smoothing_factor: float = 0.0, num_classes: 
         return nn.CrossEntropyLoss(label_smoothing=label_smoothing_factor if label_smoothing_factor > 0 else 0.0,
                                    ignore_index=-1) # CE handles ignore_index internally
     # For other losses, ensure they handle ignore_index or that masking is done before calling them
-    elif loss_name == 'gce': return GCELoss(q=0.7, num_classes=num_classes, ignore_index=-1)
-    elif loss_name == 'sce': return SCELoss(alpha=1.0, beta=1.0, num_classes=num_classes, ignore_index=-1)
+    elif loss_name == 'gce': return GCELoss(q=0.5)
+    elif loss_name == 'sce': return SCELoss(alpha=1.0, beta=1.0)
     elif loss_name == 'bootstrapping': return BootstrappingLoss(beta=0.95, num_classes=num_classes) # Masking done in train/eval
     elif loss_name == 'focal': return FocalLoss(gamma=2.0, num_classes=num_classes, ignore_index=-1)
-    elif loss_name == 'mae': return MAELoss(num_classes=num_classes) # Masking done in train/eval
+    elif loss_name == 'mae': return MAELoss() # Masking done in train/eval
     else: raise ValueError(f"Unknown loss function: {loss_name}")
 
 # --- Main Execution ---
