@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from config import ModelConfig
+
 
 def smooth_one_hot(targets, n_classes, smoothing=0.0, device='cpu'):
     """
@@ -173,23 +175,28 @@ class ELRLoss(nn.Module):
 
         return ce_loss + self.lambda_elr * elr_reg
 
+
 class LossManager:
     """Manages loss functions"""
+
     @staticmethod
-    def get_loss(loss_name: str, label_smoothing=0.0, teacher_model=None, base_criterion_for_elr=None, config=None):
+    def get_loss(loss_name: str, label_smoothing=0.0, config: ModelConfig = None, teacher_model=None,
+                 base_criterion_for_elr=None):
         loss_lower = loss_name.lower()
         if loss_lower == 'ce':
             return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         elif loss_lower == 'gce':
-            return GCELoss(q=0.3, label_smoothing=label_smoothing) # Assuming q is hardcoded or from config
+            return GCELoss(q=config.GCE_Q if config else 0.3, label_smoothing=label_smoothing)  # Assuming q is hardcoded or from config
         elif loss_lower == 'sce':
-            return SCELoss(alpha=1.0, beta=1.0, label_smoothing=label_smoothing) # Assuming alpha, beta are hardcoded or from config
+            return SCELoss(alpha=config.SCE_ALPHA if config else 0.5, beta=config.SCE_BETA if config else 1.0,
+                           label_smoothing=label_smoothing)  # Assuming alpha, beta are hardcoded or from config
         elif loss_lower == 'bootstrapping':
-            return BootstrappingLoss(beta=0.95, label_smoothing=label_smoothing) # Assuming beta is hardcoded or from config
+            return BootstrappingLoss(beta=0.95,
+                                     label_smoothing=label_smoothing)  # Assuming beta is hardcoded or from config
         elif loss_lower == 'focal':
-            return FocalLoss(gamma=2.0, label_smoothing=label_smoothing) # Assuming gamma is hardcoded or from config
+            return FocalLoss(gamma=2.0, label_smoothing=label_smoothing)  # Assuming gamma is hardcoded or from config
         elif loss_lower == 'mae':
-            return MAELoss(label_smoothing=label_smoothing) # Ensure this is appropriate for your task
+            return MAELoss(label_smoothing=label_smoothing)  # Ensure this is appropriate for your task
         elif loss_lower == 'elr':
             if teacher_model is None or base_criterion_for_elr is None or config is None:
                 raise ValueError("ELRLoss requires teacher_model, base_criterion_for_elr, and config.")

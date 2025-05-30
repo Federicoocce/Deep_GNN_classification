@@ -267,7 +267,7 @@ class GatedGCNTrainingSystem:
                 print(f"Error loading single model: {e}")
                 return 0
 
-    def train(self, dataset_name, train_data, val_data=None, loss_fn_name="ce",
+    def train(self, dataset_name, train_data, val_data=None,
               use_cleanlab=False, start_epoch=1):
         """
         Train the model.
@@ -318,7 +318,8 @@ class GatedGCNTrainingSystem:
             return
 
         # --- Criterion Setup ---
-        base_criterion_for_eval_or_coteaching = LossManager.get_loss(loss_fn_name,
+        base_criterion_for_eval_or_coteaching = LossManager.get_loss(self.config.LOSS_FUNCTION,
+                                                                     config=self.config,
                                                                      label_smoothing=self.config.LABEL_SMOOTHING)
         training_criterion = None
 
@@ -327,7 +328,8 @@ class GatedGCNTrainingSystem:
             training_criterion = base_criterion_for_eval_or_coteaching
         else:
             optimizer, scheduler = self.create_optimizers_and_schedulers()
-            base_criterion_for_single_train = LossManager.get_loss(loss_fn_name,
+            base_criterion_for_single_train = LossManager.get_loss(self.config.LOSS_FUNCTION,
+                                                                     config=self.config,
                                                                    label_smoothing=self.config.LABEL_SMOOTHING)
             if self.config.USE_ELR:
                 training_criterion = ELRLoss(teacher_model=self.teacher_model,
@@ -341,7 +343,7 @@ class GatedGCNTrainingSystem:
             early_stopping = EarlyStopping(patience=self.config.EARLY_STOPPING_PATIENCE,
                                            min_delta=self.config.EARLY_STOPPING_MIN_DELTA, mode='max')
 
-        self._print_config(dataset_name, loss_fn_name, training_criterion, self.config.USE_ELR)
+        self._print_config(dataset_name, self.config.LOSS_FUNCTION, training_criterion, self.config.USE_ELR)
 
         print("Starting training...")
         best_val_acc = 0.0
@@ -423,7 +425,8 @@ class GatedGCNTrainingSystem:
 
             # Log epoch information
             elapsed_time = time.time() - start_time
-            self._log_epoch(epoch, epoch_metrics, elapsed_time)
+            if epoch % 10 == 0 or epoch == self.config.EPOCHS:
+                self._log_epoch(epoch, epoch_metrics, elapsed_time)
 
             if early_stopping and val_loader:
                 if early_stopping(val_acc_epoch):
@@ -433,7 +436,7 @@ class GatedGCNTrainingSystem:
 
         print("\nTraining finished.")
 
-        # Save final training log
+        # Save final training log every 10 epochs
         self._save_training_log(dataset_name)
         print(f"Training logs saved to {os.path.join(self.logs_path, f'training_log_{dataset_name}.json')}")
 
@@ -464,6 +467,7 @@ class GatedGCNTrainingSystem:
         # Create evaluation criterion
         criterion_for_eval = LossManager.get_loss(
             loss_fn_name,
+            config=self.config,
             label_smoothing=getattr(self.config, 'LABEL_SMOOTHING', 0.0)
         )
 

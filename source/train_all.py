@@ -2,13 +2,13 @@ import subprocess
 import os
 
 # Base directory relative to this script
-base_data_dir = os.path.join("..", "data-20250530T065104Z-1-001", "data")
+base_data_dir = "/workspace/Deep/data"
 
 # Dataset identifiers
 datasets = ["A", "B", "C", "D"]
 
 # Script to run
-main_script = "main.py"
+main_script = os.path.join("source", "main.py")
 
 # Run main.py for each dataset
 for dataset in datasets:
