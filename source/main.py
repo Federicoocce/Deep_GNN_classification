@@ -33,7 +33,7 @@ def main():
     args = parse_args()
 
     # Compute base path relative to this script's location
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(os.path.abspath(__file__)).parent
     checkpoint_dir = os.path.join(base_dir, 'checkpoints')
     logs_dir = os.path.join(base_dir, 'logs')
     submission_dir = os.path.join(base_dir, 'submissions')
