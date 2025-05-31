@@ -499,7 +499,7 @@ class GatedGCNTrainingSystem:
                 return
 
         num_test_samples = len(preds_array)
-        ids = np.arange(1, num_test_samples + 1)
+        ids = np.arange(0, num_test_samples)
         pred_df = pd.DataFrame({'id': ids, 'pred': preds_array})
         output_fn = os.path.join(output_path, f'testset_{dataset_name}.csv')
         pred_df.to_csv(output_fn, index=False)

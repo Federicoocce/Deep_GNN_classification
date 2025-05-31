@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -33,10 +34,10 @@ def main():
     args = parse_args()
 
     # Compute base path relative to this script's location
-    base_dir = os.path.dirname(os.path.abspath(__file__)).parent
+    base_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent
     checkpoint_dir = os.path.join(base_dir, 'checkpoints')
     logs_dir = os.path.join(base_dir, 'logs')
-    submission_dir = os.path.join(base_dir, 'submission')
+    submission_dir = os.path.join(base_dir, 'submission') # TODO maybe saving in zip
 
     # Load test data
     dataset_splits = load_single_dataset(
