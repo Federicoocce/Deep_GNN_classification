@@ -95,3 +95,8 @@ python source/main.py --test_path <path_to_test_data> --train_path <path_to_trai
 ```bash
 python source/zip.py
 ```
+
+## Notes
+- Authors: [Federico Matarante] and [Federico Occelli]
+- We forgot to initialize a seed for the reproducibility of the model initially, so the results of another training might differ slightly. 
+- The model weights are already included in the repository, so you can directly run the evaluation without needing to train from scratch.
