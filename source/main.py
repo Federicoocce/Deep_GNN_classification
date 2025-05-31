@@ -36,7 +36,7 @@ def main():
     base_dir = os.path.dirname(os.path.abspath(__file__)).parent
     checkpoint_dir = os.path.join(base_dir, 'checkpoints')
     logs_dir = os.path.join(base_dir, 'logs')
-    submission_dir = os.path.join(base_dir, 'submissions')
+    submission_dir = os.path.join(base_dir, 'submission')
 
     # Load test data
     dataset_splits = load_single_dataset(
